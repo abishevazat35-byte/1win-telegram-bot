@@ -1,91 +1,79 @@
-import os
-import random
 import asyncio
-import threading
+import random
+import os
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
 from flask import Flask, request
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils import executor
 
-# === Настройки ===
-TOKEN = "8368265900:AAHOQOeJs57zfpHOSm4594lvFsPm9VKO91c"      # <-- вставь сюда токен от @BotFather
-ADMIN_ID = 1078514845             # <-- твой Telegram ID (Азат)
-REF_LINK = "https://1wilib.life/casino/list/4?p=ly1f"  # <-- твоя партнёрская ссылка
+# --- Твой токен бота ---
+BOT_TOKEN = "8368265900:AAHOQOeJs57zfpHOSm4594lvFsPm9VKO91c"
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
-
+# --- Flask сервер для Render ---
 app = Flask(__name__)
 
-# === Кнопка регистрации ===
-reg_button = KeyboardButton("📲 Регистрация")
-reg_markup = ReplyKeyboardMarkup(resize_keyboard=True).add(reg_button)
-
-# === Приветственное сообщение ===
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    text = (
-        "📲Для начала необходимо провести регистрацию на 1win. Чтобы бот успешно проверил регистрацию, нужно соблюсти важные условия:\n\n"
-        "1️⃣ Аккаунт обязательно должен быть НОВЫМ! Если у вас уже есть аккаунт и при нажатии на кнопку «РЕГИСТРАЦИЯ» вы попадаете на старый, "
-        "необходимо выйти с него и заново нажать на кнопку «РЕГИСТРАЦИЯ», после чего по новой зарегистрироваться!\n\n"
-        "2️⃣ Чтобы бот смог проверить вашу регистрацию, обязательно нужно ввести промокод при регистрации!\n\n"
-        "3️⃣ Внести депозит на минимальную сумму!\n\n"
-        "После РЕГИСТРАЦИИ бот автоматически переведёт вас к следующему шагу ✅"
+# --- Обработка команды /start ---
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    kb = [[types.KeyboardButton(text="📲 Регистрация")]]
+    keyboard = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+    await message.answer(
+        "👋 Привет! Нажми на кнопку ниже, чтобы зарегистрироваться:",
+        reply_markup=keyboard
     )
-    await message.answer(text, reply_markup=reg_markup)
 
-# === Обработка кнопки ===
-@dp.message_handler(lambda message: message.text == "📲 Регистрация")
-async def register(message: types.Message):
-    link = f"{REF_LINK}&tag={message.from_user.id}"
-    await message.answer(f"🔗 Перейди по ссылке и зарегистрируйся:\n{link}")
+# --- Кнопка Регистрация ---
+@dp.message(F.text == "📲 Регистрация")
+async def send_reg_link(message: types.Message):
+    reg_link = "https://1wincpz.top/casino/list?open=register"
+    await message.answer(
+        f"🔗 Вот твоя ссылка для регистрации: {reg_link}\n\nПосле регистрации подожди немного — бот отправит тебе прогноз 😉"
+    )
 
-# === Flask: получение постбэков от 1Win ===
-@app.route('/')
-def index():
-    return "✅ 1win bot работает!"
-
-@app.route('/postback', methods=['POST'])
+# --- POSTBACK от 1win (user_id и amount) ---
+@app.route('/postback', methods=['GET', 'POST'])
 def postback():
-    data = request.json
-    if not data:
-        return "no data"
-    
-    user_id = data.get("subid")
-    amount = data.get("amount")
-
-    if user_id:
-        asyncio.run(send_forecast(user_id, amount))
-    return "ok"
-
-# === Отправка прогноза ===
-async def send_forecast(user_id, amount=None):
     try:
-        folder = "images"
-        files = [f for f in os.listdir(folder) if f.endswith((".jpg", ".png"))]
-        if not files:
-            await bot.send_message(chat_id=ADMIN_ID, text="⚠️ В папке images нет фото!")
-            return
+        data = request.args or request.form
+        user_id = data.get("user_id")
+        amount = data.get("amount")
 
-        photo_path = os.path.join(folder, random.choice(files))
-        caption = "🎯 Твой прогноз! Удачи 🍀"
+        # Если есть user_id — шлем фото
+        if user_id:
+            asyncio.run(send_random_image(user_id))
 
-        if amount:
-            caption += f"\n💰 Пополнение: {amount}₸"
+        # Если есть сумма — шлем сообщение
+        if user_id and amount:
+            asyncio.run(send_amount_info(user_id, amount))
 
-        await bot.send_photo(chat_id=user_id, photo=open(photo_path, "rb"), caption=caption)
-        await bot.send_message(chat_id=ADMIN_ID, text=f"✅ Отправлен прогноз пользователю {user_id}")
-
+        return "ok", 200
     except Exception as e:
-        await bot.send_message(chat_id=ADMIN_ID, text=f"❌ Ошибка при отправке прогноза: {e}")
+        print("Ошибка postback:", e)
+        return "error", 500
 
-# === Запуск Flask и Telegram одновременно ===
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+# --- Отправка случайного фото из папки images ---
+async def send_random_image(user_id):
+    folder = "images"
+    images = os.listdir(folder)
+    if not images:
+        return
+    random_img = random.choice(images)
+    path = os.path.join(folder, random_img)
+    await bot.send_photo(chat_id=user_id, photo=open(path, "rb"))
 
-def run_telegram():
-    executor.start_polling(dp, skip_updates=True)
+# --- Отправка суммы (если есть) ---
+async def send_amount_info(user_id, amount):
+    text = f"💸 Сумма: {amount}₸"
+    await bot.send_message(chat_id=user_id, text=text)
 
+# --- Запуск aiogram ---
+async def main():
+    print("✅ Бот запущен и готов к работе!")
+    await dp.start_polling(bot)
+
+# --- Flask сервер ---
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    run_telegram()
+    import threading
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000)).start()
+    asyncio.run(main())
